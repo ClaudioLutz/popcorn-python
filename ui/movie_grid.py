@@ -78,6 +78,7 @@ class MovieGrid(QScrollArea):
     movie_clicked = pyqtSignal(Movie)
     movie_hidden = pyqtSignal(Movie)
     movie_watched = pyqtSignal(Movie)
+    movie_watchlist = pyqtSignal(Movie)
     load_more = pyqtSignal()
 
     COLUMNS = 5
@@ -91,6 +92,7 @@ class MovieGrid(QScrollArea):
         self.downloaded_codes: set[str] = set()
         self.hidden_codes: set[str] = set()
         self.watched_codes: set[str] = set()
+        self.watchlist_codes: set[str] = set()
         self.library_lookup: set[tuple[str, int | None]] = set()
 
     def _setup_ui(self):
@@ -120,16 +122,18 @@ class MovieGrid(QScrollArea):
             if value >= scrollbar.maximum() - 200:
                 self.load_more.emit()
 
-    def check_needs_more(self):
+    def check_needs_more(self, cards_before: int = None):
         """Check if we need to load more content to fill the viewport."""
         # Use a timer to defer the check until layout is complete
-        QTimer.singleShot(100, self._do_check_needs_more)
+        QTimer.singleShot(100, lambda: self._do_check_needs_more(cards_before))
 
-    def _do_check_needs_more(self):
+    def _do_check_needs_more(self, cards_before: int = None):
         """Actually check if more content is needed."""
         scrollbar = self.verticalScrollBar()
-        # If there's no scrollbar (content fits in viewport), we need more
-        if scrollbar.maximum() == 0 and len(self.cards) > 0:
+        # If there's no scrollbar (content fits in viewport), we may need more
+        if scrollbar.maximum() == 0:
+            # If we had cards before and still have the same count, all new movies were filtered
+            # Keep trying to load more (up to a reasonable limit tracked by caller)
             self.load_more.emit()
 
     def set_downloaded_codes(self, codes: set[str]):
@@ -143,6 +147,10 @@ class MovieGrid(QScrollArea):
     def set_watched_codes(self, codes: set[str]):
         """Set the list of watched movie IMDB codes."""
         self.watched_codes = codes
+
+    def set_watchlist_codes(self, codes: set[str]):
+        """Set the list of watchlist movie IMDB codes."""
+        self.watchlist_codes = codes
 
     def set_library_lookup(self, lookup: set[tuple[str, int | None]]):
         """Set the library lookup set for matching existing movies."""
@@ -172,6 +180,10 @@ class MovieGrid(QScrollArea):
         """Handle watched request from card."""
         self.movie_watched.emit(movie)
 
+    def _on_watchlist_requested(self, movie: Movie):
+        """Handle watchlist request from card."""
+        self.movie_watchlist.emit(movie)
+
     def clear(self):
         """Clear all movie cards."""
         for card in self.cards:
@@ -179,13 +191,33 @@ class MovieGrid(QScrollArea):
             card.deleteLater()
         self.cards.clear()
 
-    def add_movies(self, movies: list[Movie], hide_downloaded: bool = True, show_hidden: bool = False, hide_watched: bool = False):
-        """Add movies to the grid."""
-        start_idx = len(self.cards)
+    def add_movies(self, movies: list[Movie], filters: dict = None):
+        """Add movies to the grid with filtering."""
+        if filters is None:
+            filters = {}
+
+        # Extract filter values with defaults
+        hide_downloaded = filters.get("hide_downloaded", True)
+        show_hidden = filters.get("show_hidden", False)
+        hide_watched = filters.get("hide_watched", False)
+        hide_watchlist = filters.get("hide_watchlist", True)
+        show_watchlist_only = filters.get("show_watchlist_only", False)
+
+        # Advanced filters
+        min_year = filters.get("min_year", 1900)
+        max_year = filters.get("max_year", 2100)
+        min_runtime = filters.get("min_runtime", 0)
+        max_runtime = filters.get("max_runtime", 500)
+        quality_2160p = filters.get("quality_2160p", True)
+        quality_1080p = filters.get("quality_1080p", True)
+        quality_720p = filters.get("quality_720p", True)
+        min_seeds = filters.get("min_seeds", 0)
+        language_filter = filters.get("language", "All")
 
         for movie in movies:
             is_hidden = movie.imdb_code in self.hidden_codes
             is_watched = movie.imdb_code in self.watched_codes
+            is_in_watchlist = movie.imdb_code in self.watchlist_codes
 
             # Skip hidden movies unless show_hidden is enabled
             if is_hidden and not show_hidden:
@@ -193,6 +225,15 @@ class MovieGrid(QScrollArea):
 
             # Skip watched movies if hide_watched is enabled
             if is_watched and hide_watched:
+                continue
+
+            # Watchlist filtering logic
+            if show_watchlist_only:
+                # Only show movies in watchlist
+                if not is_in_watchlist:
+                    continue
+            elif hide_watchlist and is_in_watchlist:
+                # Hide watchlist movies from main view
                 continue
 
             # Check if movie exists in downloaded DB or local library
@@ -204,11 +245,46 @@ class MovieGrid(QScrollArea):
             if hide_downloaded and is_owned:
                 continue
 
+            # Year filter
+            if movie.year < min_year or movie.year > max_year:
+                continue
+
+            # Runtime filter
+            if movie.runtime > 0:  # Only filter if runtime is known
+                if movie.runtime < min_runtime or movie.runtime > max_runtime:
+                    continue
+
+            # Language filter
+            if language_filter != "All":
+                if movie.language.lower() != language_filter.lower():
+                    continue
+
+            # Quality filter - check if movie has at least one of the selected qualities
+            if movie.torrents:
+                available_qualities = {t.quality for t in movie.torrents}
+                has_selected_quality = False
+                if quality_2160p and "2160p" in available_qualities:
+                    has_selected_quality = True
+                if quality_1080p and "1080p" in available_qualities:
+                    has_selected_quality = True
+                if quality_720p and "720p" in available_qualities:
+                    has_selected_quality = True
+                # If no quality filter is selected, show all
+                if (quality_2160p or quality_1080p or quality_720p) and not has_selected_quality:
+                    continue
+
+            # Seeds filter - check if at least one torrent has enough seeds
+            if min_seeds > 0 and movie.torrents:
+                max_torrent_seeds = max(t.seeds for t in movie.torrents)
+                if max_torrent_seeds < min_seeds:
+                    continue
+
             is_downloaded = is_owned
-            card = MovieCard(movie, is_downloaded, is_hidden, is_watched)
+            card = MovieCard(movie, is_downloaded, is_hidden, is_watched, is_in_watchlist)
             card.clicked.connect(self.movie_clicked.emit)
             card.hide_requested.connect(self._on_hide_requested)
             card.watched_requested.connect(self._on_watched_requested)
+            card.watchlist_requested.connect(self._on_watchlist_requested)
 
             # Calculate grid position
             idx = len(self.cards)
@@ -227,10 +303,10 @@ class MovieGrid(QScrollArea):
             else:
                 card.set_placeholder()
 
-    def set_movies(self, movies: list[Movie], hide_downloaded: bool = True, show_hidden: bool = False, hide_watched: bool = False):
+    def set_movies(self, movies: list[Movie], filters: dict = None):
         """Replace all movies in the grid."""
         self.clear()
-        self.add_movies(movies, hide_downloaded, show_hidden, hide_watched)
+        self.add_movies(movies, filters)
 
     def relayout_grid(self):
         """Re-layout all cards to fill holes."""

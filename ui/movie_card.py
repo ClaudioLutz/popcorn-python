@@ -16,19 +16,22 @@ class MovieCard(QFrame):
     clicked = pyqtSignal(Movie)
     hide_requested = pyqtSignal(Movie)
     watched_requested = pyqtSignal(Movie)
+    watchlist_requested = pyqtSignal(Movie)
 
     CARD_WIDTH = 180
-    CARD_HEIGHT = 320
+    CARD_HEIGHT = 360
     POSTER_HEIGHT = 260
 
-    def __init__(self, movie: Movie, is_downloaded: bool = False, is_hidden: bool = False, is_watched: bool = False, parent=None):
+    def __init__(self, movie: Movie, is_downloaded: bool = False, is_hidden: bool = False, is_watched: bool = False, is_in_watchlist: bool = False, parent=None):
         super().__init__(parent)
         self.movie = movie
         self.is_downloaded = is_downloaded
         self.is_hidden = is_hidden
         self.is_watched = is_watched
+        self.is_in_watchlist = is_in_watchlist
         self.hide_btn = None
         self.watched_btn = None
+        self.watchlist_btn = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -126,6 +129,32 @@ class MovieCard(QFrame):
         self.watched_btn.clicked.connect(self._on_watched_clicked)
         self.watched_btn.hide()
 
+        # Watchlist button (appears on hover) - GOLD
+        if self.is_in_watchlist:
+            self.watchlist_btn = QPushButton("★", poster_container)
+            self.watchlist_btn.setToolTip("Remove from watchlist")
+        else:
+            self.watchlist_btn = QPushButton("☆", poster_container)
+            self.watchlist_btn.setToolTip("Add to watchlist")
+
+        self.watchlist_btn.setFixedSize(24, 24)
+        self.watchlist_btn.move(64, 8)  # Next to watched button
+        self.watchlist_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #f59e0b;
+                color: white;
+                border: none;
+                border-radius: 12px;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{
+                background-color: #d97706;
+            }}
+        """)
+        self.watchlist_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.watchlist_btn.clicked.connect(self._on_watchlist_clicked)
+        self.watchlist_btn.hide()
+
         # Watched badge (always visible if watched) - GREEN
         if self.is_watched:
             watched_badge = QLabel("👁", poster_container)
@@ -140,23 +169,19 @@ class MovieCard(QFrame):
             watched_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
             watched_badge.move(self.CARD_WIDTH - 64, 8)
 
-        # Hidden overlay
-        if self.is_hidden:
-            hidden_overlay = QLabel("HIDDEN", poster_container)
-            hidden_overlay.setStyleSheet(f"""
-                background-color: rgba(0, 0, 0, 0.6);
-                color: {COLORS['error']};
-                font-size: 14px;
-                font-weight: bold;
-                padding: 4px 8px;
+        # Watchlist badge (always visible if in watchlist) - GOLD
+        if self.is_in_watchlist:
+            watchlist_badge = QLabel("★", poster_container)
+            watchlist_badge.setStyleSheet(f"""
+                background-color: #f59e0b;
+                color: white;
+                font-size: 12px;
+                padding: 4px;
                 border-radius: 4px;
             """)
-            hidden_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            hidden_overlay.adjustSize()
-            hidden_overlay.move(
-                (self.CARD_WIDTH - hidden_overlay.width()) // 2,
-                self.POSTER_HEIGHT - 30
-            )
+            watchlist_badge.setFixedSize(24, 24)
+            watchlist_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            watchlist_badge.move(self.CARD_WIDTH - 92, 8)
 
         layout.addWidget(poster_container)
 
@@ -172,12 +197,14 @@ class MovieCard(QFrame):
         info_layout.setSpacing(4)
 
         # Title
-        title_label = QLabel(self._truncate(self.movie.title, 20))
+        title_label = QLabel(self._truncate(self.movie.title, 40))
         title_label.setStyleSheet(f"""
             color: {COLORS['text']};
             font-size: 13px;
             font-weight: bold;
         """)
+        title_label.setWordWrap(True)
+        title_label.setMaximumHeight(50)
         title_label.setToolTip(self.movie.title)
         info_layout.addWidget(title_label)
 
@@ -204,15 +231,9 @@ class MovieCard(QFrame):
             scaled = pixmap.scaled(
                 self.CARD_WIDTH,
                 self.POSTER_HEIGHT,
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
-            # Crop to fit
-            if scaled.width() > self.CARD_WIDTH or scaled.height() > self.POSTER_HEIGHT:
-                x = (scaled.width() - self.CARD_WIDTH) // 2
-                y = (scaled.height() - self.POSTER_HEIGHT) // 2
-                scaled = scaled.copy(x, y, self.CARD_WIDTH, self.POSTER_HEIGHT)
-
             self.poster_label.setPixmap(scaled)
         else:
             self.poster_label.setText("No Image")
@@ -234,6 +255,10 @@ class MovieCard(QFrame):
         """Handle watched button click."""
         self.watched_requested.emit(self.movie)
 
+    def _on_watchlist_clicked(self):
+        """Handle watchlist button click."""
+        self.watchlist_requested.emit(self.movie)
+
     def mousePressEvent(self, event):
         """Handle click events."""
         if event.button() == Qt.MouseButton.LeftButton:
@@ -252,6 +277,8 @@ class MovieCard(QFrame):
             self.hide_btn.show()
         if self.watched_btn:
             self.watched_btn.show()
+        if self.watchlist_btn:
+            self.watchlist_btn.show()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
@@ -266,6 +293,8 @@ class MovieCard(QFrame):
             self.hide_btn.hide()
         if self.watched_btn:
             self.watched_btn.hide()
+        if self.watchlist_btn:
+            self.watchlist_btn.hide()
         super().leaveEvent(event)
 
     @staticmethod

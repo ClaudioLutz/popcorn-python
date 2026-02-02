@@ -60,6 +60,14 @@ class Database:
                     watched_date TEXT
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS watchlist_movies (
+                    imdb_code TEXT PRIMARY KEY,
+                    title TEXT,
+                    year INTEGER,
+                    added_date TEXT
+                )
+            """)
             conn.commit()
 
     def is_downloaded(self, imdb_code: str) -> bool:
@@ -191,6 +199,12 @@ class Database:
             )
             return [dict(row) for row in cursor.fetchall()]
 
+    def clear_all_hidden(self):
+        """Clear all hidden movies."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM hidden_movies")
+            conn.commit()
+
     # Watched movies
     def mark_watched(self, imdb_code: str, title: str, year: int):
         """Mark a movie as watched."""
@@ -227,6 +241,45 @@ class Database:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
                 "SELECT * FROM watched_movies ORDER BY watched_date DESC"
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    # Watchlist movies
+    def add_to_watchlist(self, imdb_code: str, title: str, year: int):
+        """Add a movie to the watchlist."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO watchlist_movies (imdb_code, title, year, added_date) VALUES (?, ?, ?, ?)",
+                (imdb_code, title, year, datetime.now().isoformat())
+            )
+            conn.commit()
+
+    def remove_from_watchlist(self, imdb_code: str):
+        """Remove a movie from the watchlist."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM watchlist_movies WHERE imdb_code = ?", (imdb_code,))
+            conn.commit()
+
+    def is_in_watchlist(self, imdb_code: str) -> bool:
+        """Check if a movie is in the watchlist."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT 1 FROM watchlist_movies WHERE imdb_code = ?", (imdb_code,)
+            )
+            return cursor.fetchone() is not None
+
+    def get_watchlist_imdb_codes(self) -> set[str]:
+        """Get all watchlist movie IMDB codes."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("SELECT imdb_code FROM watchlist_movies")
+            return {row[0] for row in cursor.fetchall()}
+
+    def get_all_watchlist(self) -> list[dict]:
+        """Get all watchlist movies."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT * FROM watchlist_movies ORDER BY added_date DESC"
             )
             return [dict(row) for row in cursor.fetchall()]
 

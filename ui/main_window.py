@@ -28,7 +28,9 @@ class MovieLoaderThread(QThread):
         self.page = 1
         self.genre = None
         self.sort_by = "download_count"
+        self.order_by = "desc"
         self.query = None
+        self.minimum_rating = 0
 
     def run(self):
         try:
@@ -37,7 +39,9 @@ class MovieLoaderThread(QThread):
                 limit=20,
                 genre=self.genre,
                 sort_by=self.sort_by,
-                query=self.query if self.query else None
+                order_by=self.order_by,
+                query=self.query if self.query else None,
+                minimum_rating=self.minimum_rating
             )
             self.movies_loaded.emit(movies, total)
         except Exception as e:
@@ -61,6 +65,7 @@ class MainWindow(QMainWindow):
         self.is_loading = False
         self.current_filters = {}
         self.library_lookup = set()
+        self.empty_pages_count = 0  # Track consecutive pages with all movies filtered
 
         # Initialize library folders if not set
         self._init_library()
@@ -108,6 +113,7 @@ class MainWindow(QMainWindow):
         self.movie_grid.set_downloaded_codes(self.db.get_downloaded_imdb_codes())
         self.movie_grid.set_hidden_codes(self.db.get_hidden_imdb_codes())
         self.movie_grid.set_watched_codes(self.db.get_watched_imdb_codes())
+        self.movie_grid.set_watchlist_codes(self.db.get_watchlist_imdb_codes())
         self.movie_grid.set_library_lookup(self.library_lookup)
         layout.addWidget(self.movie_grid)
 
@@ -128,6 +134,7 @@ class MainWindow(QMainWindow):
         self.movie_grid.movie_clicked.connect(self._on_movie_clicked)
         self.movie_grid.movie_hidden.connect(self._on_movie_hidden)
         self.movie_grid.movie_watched.connect(self._on_movie_watched)
+        self.movie_grid.movie_watchlist.connect(self._on_movie_watchlist)
         self.movie_grid.load_more.connect(self._load_more_movies)
 
     def _try_connect_qbittorrent(self):
@@ -143,6 +150,7 @@ class MainWindow(QMainWindow):
         """Handle filter changes."""
         self.current_filters = filters
         self.current_page = 1
+        self.empty_pages_count = 0  # Reset empty pages counter
         self._load_movies()
 
     def _load_movies(self):
@@ -158,7 +166,9 @@ class MainWindow(QMainWindow):
         self.loader.page = self.current_page
         self.loader.genre = self.current_filters.get("genre")
         self.loader.sort_by = self.current_filters.get("sort_by", "download_count")
+        self.loader.order_by = self.current_filters.get("order_by", "desc")
         self.loader.query = self.current_filters.get("query")
+        self.loader.minimum_rating = self.current_filters.get("minimum_rating", 0)
 
         self.loader.movies_loaded.connect(self._on_movies_loaded)
         self.loader.error_occurred.connect(self._on_load_error)
@@ -177,7 +187,9 @@ class MainWindow(QMainWindow):
         self.loader.page = self.current_page
         self.loader.genre = self.current_filters.get("genre")
         self.loader.sort_by = self.current_filters.get("sort_by", "download_count")
+        self.loader.order_by = self.current_filters.get("order_by", "desc")
         self.loader.query = self.current_filters.get("query")
+        self.loader.minimum_rating = self.current_filters.get("minimum_rating", 0)
 
         self.loader.movies_loaded.connect(self._on_more_movies_loaded)
         self.loader.error_occurred.connect(self._on_load_error)
@@ -187,16 +199,23 @@ class MainWindow(QMainWindow):
         """Handle movies loaded."""
         self.is_loading = False
         self.total_movies = total
+        self.empty_pages_count = 0  # Reset on initial load
 
-        hide_downloaded = self.current_filters.get("hide_downloaded", True)
-        show_hidden = self.current_filters.get("show_hidden", False)
-        hide_watched = self.current_filters.get("hide_watched", False)
-        self.movie_grid.set_movies(movies, hide_downloaded, show_hidden, hide_watched)
+        cards_before = len(self.movie_grid.cards)
+        self.movie_grid.set_movies(movies, self.current_filters)
+        cards_after = len(self.movie_grid.cards)
 
-        self.status_label.setText(f"Showing {len(self.movie_grid.cards)} of {total} movies")
+        self.status_label.setText(f"Showing {cards_after} of {total} movies")
 
         if not movies:
             self.movie_grid.show_empty_state("No movies found. Try different filters.")
+        elif cards_after == 0 and movies:
+            # All movies were filtered out, try loading more
+            self.empty_pages_count += 1
+            if self.empty_pages_count < 20:  # Try up to 20 pages
+                self.movie_grid.check_needs_more()
+            else:
+                self.movie_grid.show_empty_state("All movies filtered. Try different filters.")
         else:
             # Check if we need more content to fill the viewport
             self.movie_grid.check_needs_more()
@@ -206,15 +225,24 @@ class MainWindow(QMainWindow):
         self.is_loading = False
         self.total_movies = total
 
-        hide_downloaded = self.current_filters.get("hide_downloaded", True)
-        show_hidden = self.current_filters.get("show_hidden", False)
-        hide_watched = self.current_filters.get("hide_watched", False)
-        self.movie_grid.add_movies(movies, hide_downloaded, show_hidden, hide_watched)
+        cards_before = len(self.movie_grid.cards)
+        self.movie_grid.add_movies(movies, self.current_filters)
+        cards_after = len(self.movie_grid.cards)
 
-        self.status_label.setText(f"Showing {len(self.movie_grid.cards)} of {total} movies")
+        self.status_label.setText(f"Showing {cards_after} of {total} movies")
+
+        # Track if this page added no visible cards
+        if cards_after == cards_before and movies:
+            self.empty_pages_count += 1
+        else:
+            self.empty_pages_count = 0  # Reset on successful add
 
         # Check if we still need more content to fill the viewport
-        self.movie_grid.check_needs_more()
+        # Stop after 20 consecutive empty pages to prevent infinite loop
+        if self.empty_pages_count < 20:
+            self.movie_grid.check_needs_more()
+        elif cards_after == 0:
+            self.movie_grid.show_empty_state("All movies filtered. Try different filters.")
 
     def _on_load_error(self, error: str):
         """Handle load error."""
@@ -270,6 +298,33 @@ class MainWindow(QMainWindow):
 
         # Update grid's watched codes
         self.movie_grid.set_watched_codes(self.db.get_watched_imdb_codes())
+
+        # Remove the card from the grid and relayout (to update the card state)
+        for card in self.movie_grid.cards[:]:
+            if card.movie.imdb_code == movie.imdb_code:
+                self.movie_grid.grid_layout.removeWidget(card)
+                self.movie_grid.cards.remove(card)
+                card.deleteLater()
+                break
+
+        # Relayout to fill holes
+        self.movie_grid.relayout_grid()
+
+    def _on_movie_watchlist(self, movie: Movie):
+        """Handle movie watchlist add/remove request."""
+        is_currently_in_watchlist = self.db.is_in_watchlist(movie.imdb_code)
+
+        if is_currently_in_watchlist:
+            # Remove from watchlist
+            self.db.remove_from_watchlist(movie.imdb_code)
+            self.status_label.setText(f"Removed from watchlist: {movie.title}")
+        else:
+            # Add to watchlist
+            self.db.add_to_watchlist(movie.imdb_code, movie.title, movie.year)
+            self.status_label.setText(f"Added to watchlist: {movie.title}")
+
+        # Update grid's watchlist codes
+        self.movie_grid.set_watchlist_codes(self.db.get_watchlist_imdb_codes())
 
         # Remove the card from the grid and relayout (to update the card state)
         for card in self.movie_grid.cards[:]:
